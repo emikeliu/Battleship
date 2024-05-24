@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>海战棋</title>
+    <script src="jsQR.js"></script>
+    <script src="jsOTP-es5.min.js"></script>
+    <script src="axlsign.js"></script>
+    <script src="qrcode.min.js"></script>
+    <script src="aes.js"></script>
+    <script>
+      let globalMode;
+      let sharedKey = "";
+      let gameInfo = {};
+      function uint8arrayToBase64(u8Arr) {
+        let CHUNK_SIZE = 0x8000; //arbitrary number
+        let index = 0;
+        let length = u8Arr.length;
+        let result = "";
+        let slice;
+        while (index < length) {
+          slice = u8Arr.subarray(index, Math.min(index + CHUNK_SIZE, length));
+          result += String.fromCharCode.apply(null, slice);
+          index += CHUNK_SIZE;
+        }
+        // web image base64图片格式: "data:image/png;base64," + b64encoded;
+        // return  "data:image/png;base64," + btoa(result);
+        return btoa(result);
+      }
+
+      function base64ToUint8Array(base64String) {
+        let padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+        let base64 = (base64String + padding)
+          .replace(/\-/g, "+")
+          .replace(/_/g, "/");
+
+        let rawData = window.atob(base64);
+        let outputArray = new Uint8Array(rawData.length);
+
+        for (var i = 0; i < rawData.length; ++i) {
+          outputArray[i] = rawData.charCodeAt(i);
+        }
+        return outputArray;
+      }
+
+      function stringToUint8Array(str) {
+        var arr = [];
+        for (var i = 0, j = str.length; i < j; ++i) {
+          arr.push(str.charCodeAt(i));
+        }
+
+        var tmpUint8Array = new Uint8Array(arr);
+        return tmpUint8Array;
+      }
+      function Uint8ArrayToString(fileData) {
+        var dataString = "";
+        for (var i = 0; i < fileData.length; i++) {
+          dataString += String.fromCharCode(fileData[i]);
+        }
+
+        return dataString;
+      }
+      function numToUint8Array(num) {
+        let arr = new Uint8Array(32);
+
+        for (let i = 0; i < 8; i++) {
+          arr[i] = num % 256;
+          num = Math.floor(num / 256);
+        }
+
+        return arr;
+      }
+
+      function generateGameCode() {
+        if (sharedKey == []) {
+          alert("请先配对！");
+          return;
+        }
+        document.getElementById("generate").style["display"] = "none";
+        var aesCbc = new root.aesjs.ModeOfOperation.ctr(
+          sharedKey,
+          new root.aesjs.Counter(5)
+        );
+        var data1 = JSON.stringify({
+          size: document.getElementById("size").value,
+          number: document.getElementById("number-of-chess").value,
+        });
+        console.log(data1);
+        var bytes = root.aesjs.utils.utf8.toBytes(data1);
+        console.log(bytes);
+        var encryptedBytes = aesCbc.encrypt(bytes);
+
+        var qrcode1 = new QRCode(document.getElementById("game-code"), {
+          text: root.aesjs.utils.hex.fromBytes(encryptedBytes),
+          width: 256,
+          height: 256,
+          colorDark: "#000000",
+          colorLight: "#ffffff",
+          correctLevel: QRCode.CorrectLevel.H,
+        });
+      }
+
+      let keyPair = {};
+      function generateKeyPairOnLoad() {
+        keyPair = axlsign.generateKeyPair(numToUint8Array(Date.now()));
+      }
+      function uuid() {
+        var temp_url = URL.createObjectURL(new Blob());
+        var uuid = temp_url.toString();
+        URL.revokeObjectURL(temp_url);
+        return uuid.substr(uuid.lastIndexOf("/") + 1);
+      }
+
+      var totp = new jsOTP.totp();
+      function getMedia(globalMode) {
+        document.getElementById("video").style["display"] = "";
+        navigator.getUserMedia =
+          navigator.getUserMedia ||
+          navigator.webkitGetUserMedia ||
+          navigator.mozGetUserMedia;
+        var constraints = { audio: false, video: { width: 640, height: 480 } };
+
+        function takepicture(video) {
+          const canvas = document.getElementById("canvas");
+          const context = canvas.getContext("2d");
+          canvas.width = 640;
+          canvas.height = 480;
+          context.drawImage(video, 0, 0, 640, 480);
+
+          return context.getImageData(0, 0, 640, 480);
+        }
+
+        navigator.mediaDevices
+          .getUserMedia(constraints)
+          .then(function (mediaStream) {
+            var video = document.querySelector("video");
+            video.srcObject = mediaStream;
+            video.onloadedmetadata = function (e) {
+              video.play();
+
+              let interval = window.setInterval(function () {
+                let picture = takepicture(document.querySelector("video"));
+                let code = jsQR(picture.data, 640, 480);
+                if (code) {
+                  if (globalMode == "pair") {
+                    sharedKey = axlsign.sharedKey(keyPair.private, base64ToUint8Array(code.data));
+                    console.log(sharedKey);
+                    alert("配对成功！");
+                    document.getElementById("code-div").style["display"] =
+                      "none";
+                  } else if (globalMode == "game") {
+                    var aesCbc = new root.aesjs.ModeOfOperation.ctr(
+                      sharedKey,
+                      new root.aesjs.Counter(5)
+                    );
+                    var bytes = root.aesjs.utils.hex.toBytes(code.data);
+                    var dbytes = aesCbc.decrypt(bytes);
+                    var decrypted = JSON.parse(Uint8ArrayToString(dbytes));
+                    gameInfo = decrypted;
+                    scannedCode(false);
+                    
+                  } else if (globalMode == "hit") {
+                    let doms = document.querySelectorAll(
+                      "input[type=checkbox]"
+                    );
+                    var aesCbc = new root.aesjs.ModeOfOperation.ctr(
+                      sharedKey,
+                      new root.aesjs.Counter(5)
+                    );
+                    var bytes = root.aesjs.utils.hex.toBytes(code.data);
+                    var dbytes = aesCbc.decrypt(bytes);
+                    var decrypted = JSON.parse(Uint8ArrayToString(dbytes));
+                    console.log(decrypted)
+                    document.querySelector(
+                      "input[value=c" +
+                        (parseInt(decrypted["y"])-1) +
+                        "r" +
+                        (parseInt(decrypted["x"])-1) +
+                        "]"
+                    ).parentElement.innerHTML += "x";
+                    let end = true;
+                    for (let i = 0; i < doms.length; i++) {
+                      if (doms[i].checked == true) {
+                        if (doms[i].parentElement.innerText != "x") {
+                          end = false;
+                          break;
+                        }
+                      }
+                    }
+                    if(end) {
+                      alert("你输了！")
+                      window.location.reload()
+                    }
+                  }
+                  video.pause();
+                  clearInterval(interval);
+                  mediaStream.getVideoTracks().forEach((track) => {
+                    track.stop();
+                  });
+
+                  document.getElementById("video").style["display"] = "none";
+                }
+              }, 1000);
+            };
+          })
+          .catch(function (err) {
+            console.log(err.name + ": " + err.message);
+          });
+      }
+      function getPair() {
+        getMedia("pair");
+      }
+      function getGameCode() {
+        getMedia("game");
+      }
+      function scannedCode(p) {
+        document.getElementById("hit").style.display=""
+        if (p) {
+          gameInfo = {
+            size: document.getElementById("size").value,
+            number: document.getElementById("number-of-chess").value,
+          };
+        }
+        document.getElementById("generate").style["display"] = "none";
+        let table = document.createElement("table");
+        document.getElementById("chess").appendChild(table);
+        let tr = document.createElement("tr");
+        table.appendChild(tr);
+        for (let i = 0; i <= gameInfo["size"]; i++) {
+          let td = document.createElement("td");
+          td.innerHTML = i;
+          tr.appendChild(td);
+        }
+
+        for (let i = 0; i < gameInfo["size"]; i++) {
+          tr = document.createElement("tr");
+          table.appendChild(tr);
+          td1 = document.createElement("td");
+          td1.innerHTML = (i + 1).toString(16);
+          tr.appendChild(td1);
+          for (let j = 0; j < gameInfo["size"]; j++) {
+            let td = document.createElement("td");
+            let input = document.createElement("input");
+            input.setAttribute("type", "checkbox");
+            input.setAttribute("value", "c" + i + "r" + j);
+            td.appendChild(input);
+            tr.appendChild(td);
+          }
+        }
+        document.getElementById("game-div").style["display"] = "none";
+
+        
+      }
+      function makesure() {
+        let cnt = 0;
+        let doms = document.querySelectorAll("input[type=checkbox]");
+        for (let i = 0; i < doms.length; i++) {
+          if (doms[i].checked) {
+            cnt++;
+          }
+        }
+        if (cnt != gameInfo["number"]) {
+          alert("选择数量不符合！");
+          return
+        } else {
+          for (let i = 0; i < doms.length; i++) {
+            doms[i]["disabled"] = "disabled";
+          }
+        }
+        for (let i = 0; i<gameInfo["size"]; i++) {
+          let o =document.createElement("option")
+          o.innerHTML = (i+1).toString(16)
+          o.value = i+1
+          document.getElementById("x-pos-select").appendChild(o)
+          o =document.createElement("option")
+          o.innerHTML = (i+1).toString(16)
+          o.value = i+1
+          document.getElementById("y-pos-select").appendChild(o)
+        }
+        document.getElementById("make-sure-button").style.display="none"
+      }
+      function hit() {
+        var aesCbc = new root.aesjs.ModeOfOperation.ctr(
+          sharedKey,
+          new root.aesjs.Counter(5)
+        );
+        var data1 = JSON.stringify({
+          "y": document.getElementById("x-pos-select").options[document.getElementById("x-pos-select").selectedIndex].text,
+          "x": document.getElementById("y-pos-select").options[document.getElementById("y-pos-select").selectedIndex].text,
+        });
+        console.log(data1);
+        var bytes = root.aesjs.utils.utf8.toBytes(data1);
+        console.log(bytes);
+        var encryptedBytes = aesCbc.encrypt(bytes);
+        document.getElementById("hit-code").innerHTML = ""
+        var qrcode1 = new QRCode(document.getElementById("hit-code"), {
+          text: root.aesjs.utils.hex.fromBytes(encryptedBytes),
+          width: 256,
+          height: 256,
+          colorDark: "#000000",
+          colorLight: "#ffffff",
+          correctLevel: QRCode.CorrectLevel.H,
+        });
+      }
+      function getHitCode() {
+        getMedia("hit");
+      }
+      window.onload = function () {
+        generateKeyPairOnLoad();
+        var qrcode = new QRCode(document.getElementById("code"), {
+          text: uint8arrayToBase64(keyPair.public),
+          width: 256,
+          height: 256,
+          colorDark: "#000000",
+          colorLight: "#ffffff",
+          correctLevel: QRCode.CorrectLevel.H,
+        });
+      };
+    </script>
+  </head>
+  <body>
+    <div id="generate">
+      <span>尺寸：</span><input type="number" max="12" min="9" id="size" />
+      <span>棋子数量：</span>
+      <input type="number" min="8" max="20" id="number-of-chess" />
+      <button onclick="generateGameCode()">生成</button>
+    </div>
+    <div id="chess">
+      <span>请在此打勾：</span>
+      <br />
+    </div>
+    <div id="hit" style="display: none">
+      <button id="make-sure-button" onclick="makesure()">确定阵型</button>
+      <br />
+      <span>打击位置 x=</span>
+      <select id="x-pos-select"></select>
+      <span>,y=</span>
+      <select id="y-pos-select"></select>
+      <button id="hit-button" onclick="hit()">打击</button>
+    </div>
+    <div id="code-div">
+      <span>配对码：</span>
+      <div id="code"></div>
+      <button onclick="getPair()">扫描配对码</button>
+    </div>
+    <div id="game-div">
+      <span>游戏码：</span>
+      <div id="game-code"></div>
+      <button onclick="scannedCode(true)">他人已扫描游戏码</button>
+      <button onclick="getGameCode()">扫描游戏码</button>
+    </div>
+    <div id="hit-div">
+      <span>攻击码：</span>
+      <div id="hit-code"></div>
+      <button onclick="getHitCode()">扫描攻击码</button>
+    </div>
+    <br />
+    <div id="video" style="display: none">
+      <video width="640px" height="480px"></video>
+      <canvas id="canvas"></canvas>
+    </div>
+  </body>
+</html>
